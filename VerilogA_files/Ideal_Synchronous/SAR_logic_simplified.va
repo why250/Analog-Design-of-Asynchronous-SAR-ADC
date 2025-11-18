@@ -1,0 +1,99 @@
+// VerilogA for SAR_VerilogA, VerilogA_SAR_logic_Synchronous, veriloga (Simplified)
+`include "constants.vams"
+`include "disciplines.vams"
+
+module VerilogA_SAR_logic_Synchronous(in_comp, clk, d_out, regclk, sampleclk, vdd, vss);
+
+// --- Parameters for scalability and configuration ---
+parameter integer width = 8 from [1:inf); // ADC bit width
+parameter real vtrans = 0.5;
+parameter real delay = 0;
+parameter real ttime = 1p;
+parameter real clk_threshold = 0.5;
+
+// --- Port Declarations ---
+inout vdd, vss;
+input in_comp, clk;
+output [width-1:0] d_out; // Use a vector for digital output
+output sampleclk, regclk;
+
+electrical in_comp, clk, sampleclk, regclk, vdd, vss;
+electrical [width-1:0] d_out;
+
+// --- Internal Variables ---
+real d[width-1:0];         // Internal array for bit storage
+real sample_en, reg_out;
+integer sar_counter;
+integer i; // General purpose integer for loops
+
+analog begin
+
+    // --- Initial State ---
+    @(initial_step) begin
+        sample_en = 1;
+        reg_out = 0;
+        // Initialize all bits to 0 using a procedural for loop
+        for (i = 0; i < width; i = i + 1) begin
+            d[i] = 0;
+        end
+        // Counter requires 'width' cycles for conversion, 1 for sampling, 1 for output
+        sar_counter = width + 1; 
+    end
+
+    // --- Main SAR State Machine Logic ---
+    // This state machine executes one step per rising edge of the clock.
+    @(cross(V(clk) - clk_threshold, +1)) 
+    begin
+        if (sar_counter == (width + 1)) begin // State: Sampling
+            sample_en = 1;
+            reg_out = 0;
+            // Reset all bits for the new conversion cycle
+            for (i = 0; i < width; i = i + 1) begin
+                d[i] = 0;
+            end
+        end
+        else if (sar_counter == width) begin // State: Start Conversion (Set MSB)
+            d[width-1] = 1;
+        end
+        else if (sar_counter > 0) begin // States: Main Conversion Loop (from bit width-1 down to 1)
+            d[sar_counter] = V(in_comp); // Store previous comparison result
+            d[sar_counter-1] = 1;         // Set next bit to '1' for comparison
+        end
+        else if (sar_counter == 0) begin // State: Final bit conversion & Reset
+            d[0] = V(in_comp);            // Store the last comparison result (for LSB)
+        end
+        
+        // --- Counter Update Logic ---
+        if (sar_counter == 0) begin
+            sar_counter = width + 1; // Reset counter for next cycle
+        end else begin
+            sar_counter = sar_counter - 1; // Decrement for next state
+        end
+    end 
+
+    // --- Logic for generating sampling and register clock pulses ---
+    @(cross(V(clk) - clk_threshold, -1)) 
+    begin
+        if (sample_en == 1) begin
+            sample_en = 0;
+        end
+        
+        // The register output clock is generated when the conversion is finished
+        if (sar_counter == (width + 1)) begin
+            reg_out = 1;
+        end
+    end    
+    
+    // --- Output Assignments using a genvar for-loop ---
+    // This loop is unrolled at compile time to create 'width' parallel transition statements.
+    genvar j;
+    for (j = 0; j < width; j = j + 1) begin
+        V(d_out[j]) <+ transition(d[j], delay, ttime);
+    end
+    
+    V(regclk) <+ transition(reg_out, delay, ttime);
+    V(sampleclk) <+ transition(sample_en, delay, ttime);
+    
+end
+
+endmodule
